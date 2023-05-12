@@ -1,0 +1,15 @@
+# if use in 162, please set: conda activate alpaca
+
+accelerate
+appdirs
+loralib
+bitsandbytes
+black
+black[jupyter]
+datasets
+fire
+git+https://github.com/huggingface/peft.git
+git+https://github.com/huggingface/transformers.git
+sentencepiece
+gradio
+sentencepiece
