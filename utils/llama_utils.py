@@ -125,11 +125,7 @@ class LlamaUtils:
                         return collector[name]
                 raise ValueError
 
-        block_pat = re.compile('base_model\.model\.model\.layers\.(\d+)')
-        self_attn_pat = re.compile(
-            'base_model\.model\.model\.layers\.(\d+)\.input_layernorm')
-        ffn_pat = re.compile(
-            'base_model\.model\.model\.layers\.(\d+)\.post_attention_layernorm')
+        block_pat = re.compile('model\.layers\.(\d+)')
 
         for name, module in model.named_modules():
             # print("name:", name)
@@ -286,10 +282,14 @@ class LlamaUtils:
     def load_model_params(
         self,
         model,
+        teacher,
         state_dict,  # finetune
         compression_params  # collect
     ):
         norm_proj: torch.Tensor = compression_params["norm_proj"]
+        # for proj in norm_proj:
+        #     pass1 = proj.to(dtype=torch.float)
+        #     print(pass1.T @ pass1)
         # print(norm_proj)
         # attn_proj: Optional[Dict[str, torch.Tensor]
         #                     ] = compression_params["attn_proj"]
@@ -306,7 +306,7 @@ class LlamaUtils:
         act_value = defaultdict(lambda: None)
 
         config: LlamaConfig = model.config
-        block_pat = re.compile('base_model\.model\.model\.layers\.(\d+)')
+        block_pat = re.compile('model\.layers\.(\d+)')
 
         def get_norm_params(block_id: int, perfix: str):
             path = "base_model.model.model.layers.{}.{}".format(
@@ -372,7 +372,7 @@ class LlamaUtils:
             part = norm_proj.to(device, dtype=torch.float)
 
             n_lin_w = (lin_w @ diag0 @ part) * \
-                math.sqrt(config.hidden_size / 3072)
+                math.sqrt(config.hidden_size / config.sub_size)
 
             n_lin_w.to(dtype=torch.float16)
 
@@ -454,32 +454,32 @@ class LlamaUtils:
             # self_attn
 
                 load_qk_params(
-                    name + ".self_attn.q_proj",
+                    "base_model.model." + name + ".self_attn.q_proj",
                     self_attn.q_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_qk_params(
-                    name + ".self_attn.k_proj",
+                    "base_model.model." + name + ".self_attn.k_proj",
                     self_attn.k_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_afternorm_linear(
-                    name + ".self_attn.v_proj",
+                    "base_model.model." + name + ".self_attn.v_proj",
                     self_attn.v_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_beforenorm_linear(
-                    name + ".self_attn.o_proj",
+                    "base_model.model." + name + ".self_attn.o_proj",
                     self_attn.o_proj,
                     norm_proj,
                 )
 
             # FFN
                 load_afternorm_linear(
-                    name + ".mlp.gate_proj",
+                    "base_model.model." + name + ".mlp.gate_proj",
                     ffn.gate_proj,
                     ffn_norm_w,
                     norm_proj,
@@ -487,7 +487,7 @@ class LlamaUtils:
                     isFFN=True
                 )
                 load_afternorm_linear(
-                    name + ".mlp.up_proj",
+                    "base_model.model." + name + ".mlp.up_proj",
                     ffn.up_proj,
                     ffn_norm_w,
                     norm_proj,
@@ -495,7 +495,7 @@ class LlamaUtils:
                     isFFN=True
                 )
                 load_beforenorm_linear(
-                    name + ".mlp.down_proj",
+                    "base_model.model." + name + ".mlp.down_proj",
                     ffn.down_proj,
                     norm_proj,
                     prune_dim=1,
@@ -509,14 +509,14 @@ class LlamaUtils:
                     torch.ones_like(module.input_layernorm.weight)
                 )
 
-        model.base_model.model.model.norm.weight.copy_(
-            torch.ones_like(model.base_model.model.model.norm.weight))
+        model.model.norm.weight.copy_(
+            torch.ones_like(teacher.base_model.model.model.norm.weight))
 
-        model.base_model.model.model.down_linear.weight.copy_(norm_proj.T)
+        model.model.down_linear.weight.copy_(norm_proj.T)
 
         temp0 = norm_proj.to(dtype=torch.float)
         temp1 = torch.diag(
-            model.base_model.model.model.norm.weight).to(dtype=torch.float)
+            teacher.base_model.model.model.norm.weight).to(dtype=torch.float)
         temp2 = temp1.T @ temp0
         temp2 = temp2.to(dtype=torch.float16)
-        model.base_model.model.model.up_linear.weight.copy_(temp2)
+        model.model.up_linear.weight.copy_(temp2)

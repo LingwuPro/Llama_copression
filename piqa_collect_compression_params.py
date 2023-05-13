@@ -76,7 +76,7 @@ def parse_args():
     parser.add_argument('--per_sample_token_num', type=int, default=10)
     parser.add_argument('--svd_results_dir', type=str, default="svd_results")
     parser.add_argument('--comp_mode', type=int, default=0)
-    parser.add_argument('--r_model', type=int, default=3072)
+    parser.add_argument('--r_model', type=int, default=4096)
     parser.add_argument('--r_kv', type=int, default=48)
 
     return parser.parse_args()
