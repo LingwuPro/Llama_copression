@@ -1,27 +1,36 @@
-import transformers
+import re
+import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+
 from torch.utils.data import Dataset
+import torch
+import torch.nn as nn
+import transformers
 import numpy as np
 import random
 from sklearn.model_selection import train_test_split
 from typing import Optional, Dict, List
 import argparse
+
+
 import json
 from utils.piqautils import PiqaUtils
 from utils.llama_utils import LlamaUtils
 from utils.piqatrainer import LlamaPiqaTrainer
 from utils.prompter import Prompter
+
+
 from utils.callbacks import Iteratorize, Stream
 from transformers import GenerationConfig, LlamaTokenizer, LlamaConfig, LlamaForCausalLM
 from model.modeling_llama import LlamaForCausalLM as ReduLlamaForCausalLM
 from peft import PeftModel, get_peft_config, set_peft_model_state_dict
+
+
 from datasets import load_dataset
 from transformers import DataCollatorForSeq2Seq
-import torch
-import torch.nn as nn
 from tqdm import tqdm
-import re
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -214,8 +223,6 @@ def run():
 
     setup_seed(args.seed)
 
-    adapter = torch.load("./lora-alpaca/adapter_model.bin", map_location='cpu')
-
     compression_params = torch.load(
         "./svd_results/piqa-4096/alpaca_4096_48_0_params.pt", map_location='cpu')
 
@@ -240,17 +247,15 @@ def run():
     teacher.config.bos_token_id = 1
     teacher.config.eos_token_id = 2
 
-    teacher.half()  # seems to fix bugs for some users.
+    teacher.half()
 
     teacher.eval()
+    teacher.merge_adapter()
     teacher.to("cpu")
     state_dict: Dict[str, torch.Tensor] = {}
 
-    for name, module in teacher.named_modules():
-        # print(name)
-        state_dict[name] = module
-    comp_utils.load_model_params(
-        model, teacher, state_dict, compression_params)
+    state_dict = teacher.state_dict()
+    # print(state_dict)
 
     peft_dict = {
         "base_model_name_or_path": "decapoda-research/llama-7b-hf",
@@ -278,6 +283,9 @@ def run():
     peft_config = get_peft_config(peft_dict)
     model = PeftModel(model, peft_config)
 
+    comp_utils.load_model_params(
+        model, teacher, state_dict, compression_params)
+
     # print(model)
     # exit(0)
 
@@ -290,7 +298,6 @@ def run():
     model.eval()
 
     model.to(device)
-    # model = nn.DataParallel(model, device_ids=[0, 1, 2]).cuda()
 
     # resume_from_checkpoint = './checkpoint'
     # if resume_from_checkpoint:

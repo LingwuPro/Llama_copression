@@ -143,6 +143,18 @@ class LlamaUtils:
                 handlers.append(module.input_layernorm.register_forward_hook(
                     init_fn(ffn_norm_name, norm_dict)))
 
+                # # attn:
+                # q_name = name + '.self_attn.q_proj'
+                # k_name = name + '.self_attn.k_proj'
+                # o_name = name + '.self_attn.o_proj'
+
+                # handlers.append(self_attn.q_proj.register_forward_hook(
+                #     init_fn(q_name, attn_dict, collect_input=False)))
+                # handlers.append(self_attn.k_proj.register_forward_hook(
+                #     init_fn(k_name, attn_dict, collect_input=False)))
+                # handlers.append(self_attn.o_proj.register_forward_hook(
+                #     init_fn(k_name, attn_dict)))
+
                 # ffn:
                 w1_name = name + '.mlp.w1'
                 w2_name = name + '.mlp.w2'
@@ -175,7 +187,76 @@ class LlamaUtils:
         def shape(states):
             return states.view(-1, config.num_heads, config.d_kv).permute(1, 2, 0)
 
+        # def dump_attn():
+        #     attn_value = {}
+        #     r_kv = model_args.r_kv
+        #     keys = sorted(list(set(x.replace('.q_proj', '').replace('.k_proj', '')
+        #                            for x in attn_dict.keys())))
+
+        #     for key in keys:
+        #         print('key={}'.format(key))
+        #         hidden_query = load_value(key + '.q_proj')
+        #         hidden_key = load_value(key + '.k_proj')
+
+        #         hidden_query = torch.concat(hidden_query, dim=0)
+        #         hidden_key = torch.concat(hidden_key, dim=0)
+        #         size = min(hidden_query.shape[0], data_args.token_sample_num)
+        #         indices = np.random.choice(
+        #             hidden_query.shape[0], size=size, replace=False)
+        #         hidden_query = shape(hidden_query[indices, :])
+        #         hidden_key = shape(hidden_key[indices, :])
+        #         Uq, Sq, _ = torch.linalg.svd(hidden_query)
+        #         Uk, Sk, _ = torch.linalg.svd(hidden_key)
+
+        #         M = torch.diag_embed(Sq) @ Uq.transpose(1,
+        #                                                 2) @ Uk @ torch.diag_embed(Sk)
+        #         Um, Sm, VmT = torch.linalg.svd(M)
+        #         UT = Uq @ torch.diag_embed(1.0 / Sq) @ Um[..., :r_kv] @ torch.diag_embed(
+        #             torch.sqrt(Sm[:, :r_kv]))
+        #         V = torch.diag_embed(torch.sqrt(Sm[:, :r_kv])) @ VmT[:, :r_kv, :] @ torch.diag_embed(
+        #             1.0 / Sk) @ Uk.transpose(1, 2)
+        #         attn_value[key + '.wq_proj'] = UT.transpose(1, 2)
+        #         attn_value[key + '.wk_proj'] = V
+        #     return attn_value
+
+        # def dump_wo():
+        #     wo_value = {}
+        #     for key in wo_dict.keys():
+        #         print("key={}".format(key))
+        #         value: List[torch.Tensor] = load_value(key)
+        #         hidden = torch.concat(value, dim=0)
+        #         size = min(hidden.shape[0], data_args.token_sample_num)
+        #         indices = np.random.choice(
+        #             hidden.shape[0], size=size, replace=False)
+        #         hidden = shape(hidden[indices, :])
+        #         U, S, _ = torch.linalg.svd(hidden)
+        #         wo_value[key] = U[..., :model_args.r_kv]
+        #     return wo_value
+
+        # def dump_ffn():
+            ffn_value = {}
+            model_state_dict = model.state_dict()
+            for key in ffn_dict.keys():
+                print("key={}".format(key))
+                value: List[Tuple] = load_value(key)
+                ws, hs, h2s = zip(*value)
+                ws = torch.tensor(ws).unsqueeze(-1)
+                hs = torch.stack(hs)
+                h2s = torch.stack(h2s)
+
+                h_mean = (ws * hs).sum(dim=0) / ws.sum()
+                h2_mean = (ws * h2s).sum(dim=0) / ws.sum()
+                h_std = (h2_mean - h_mean * h_mean + 1e-5).sqrt()
+                weight: torch.Tensor = model_state_dict[key +
+                                                        ".weight"].transpose(0, 1).detach().cpu()
+                norm = weight.norm(dim=1)
+                h_value: torch.Tensor = (h_mean + h_std) * norm
+                ffn_value[key] = h_value
+            return ffn_value
+
         norm_proj = dump_norm()
+        # ffn_value = dump_ffn()
+        # print(norm_proj)
         model_args.comp_mode = 0
 
         if model_args.comp_mode == 0:
@@ -191,6 +272,9 @@ class LlamaUtils:
 
         Llama_comp_params = {
             "norm_proj": norm_proj,
+            # 'attn_proj': attn_proj,
+            # 'wo_proj': wo_proj,
+            'ffn_value': ffn_value
         }
         return Llama_comp_params
 
@@ -199,10 +283,11 @@ class LlamaUtils:
         self,
         model,
         teacher,
-        state_dict,
-        compression_params
+        state_dict,  # finetune
+        compression_params  # collect
     ):
-        device = "cpu"
+        # print(model)
+        # exit(0)
         norm_proj: torch.Tensor = compression_params["norm_proj"]
 
         config: LlamaConfig = model.config
@@ -211,7 +296,7 @@ class LlamaUtils:
         def get_norm_params(block_id: int, perfix: str):
             path = "base_model.model.model.layers.{}.{}".format(
                 block_id, perfix)
-            return state_dict[path + ".weight"]
+            return state_dict[path].weight
 
         def load_qk_params(
                 name: str,
@@ -220,7 +305,13 @@ class LlamaUtils:
                 norm_proj: torch.Tensor,
                 qk_proj: Optional[torch.Tensor] = None,
         ):
-            lin_w = state_dict[name + ".weight"]
+            lin_w_drop = state_dict[name].weight.to(torch.float)
+            lin_w_A = state_dict[name +
+                                 '.lora_A']['default'].weight.to(torch.float)
+            lin_w_B = state_dict[name +
+                                 '.lora_B']['default'].weight.to(torch.float)
+            lin_w = (lin_w_drop + lin_w_B @
+                     lin_w_A).to(device, dtype=torch.float)
             diag0 = torch.diag(norm_w).to(device, dtype=torch.float)
             part = norm_proj.to(device, dtype=torch.float)
 
@@ -239,13 +330,23 @@ class LlamaUtils:
                 v_proj: Optional[torch.Tensor] = None,
                 isFFN=False
         ):
-            lin_w = state_dict[name + ".weight"]
+            if not isFFN:
+                lin_w_A = state_dict[name +
+                                     '.lora_A']['default'].weight.to(torch.float)
+                lin_w_B = state_dict[name +
+                                     '.lora_B']['default'].weight.to(torch.float)
+                lin_w_drop = state_dict[name].weight.to(torch.float)
+                lin_w = lin_w_drop + lin_w_B @ lin_w_A
+            else:
+                lin_w = state_dict[name].weight
 
             lin_w = lin_w.to(device, dtype=torch.float)
             diag0 = torch.diag(norm_w).to(device, dtype=torch.float)
             part = norm_proj.to(device, dtype=torch.float)
+
             n_lin_w = (lin_w @ diag0 @ part) * \
                 math.sqrt(config.hidden_size / config.sub_size)
+
             n_lin_w.to(dtype=torch.float16)
 
             linear.weight.copy_(n_lin_w)
@@ -259,19 +360,35 @@ class LlamaUtils:
                 o_proj: Optional[torch.Tensor] = None,
                 isFFN=False
         ):
-            lin_w = state_dict[name + ".weight"]
+            if not isFFN:
+                lin_w_A = state_dict[name +
+                                     '.lora_A']['default'].weight.to(torch.float)
+                lin_w_B = state_dict[name +
+                                     '.lora_B']['default'].weight.to(torch.float)
+                lin_w_drop = state_dict[name].weight.to(torch.float)
+                lin_w = lin_w_drop + lin_w_B @ lin_w_A
+            else:
+                lin_w = state_dict[name].weight
 
             trans = norm_proj.T.to(device, dtype=torch.float)
             lin_w = lin_w.to(device, dtype=torch.float)
             n_lin_w = trans @ lin_w
             n_lin_w.to(dtype=torch.float16)
 
+            # if retain_indices is not None:
+            #     n_lin_w = prune_ffn_weight(n_lin_w, retain_indices, prune_dim)
+
+            # if o_proj is not None:
+            #     n_lin_w = n_lin_w.view(
+            #         config.r_model, config.num_heads, config.d_kv).permute(1, 0, 2)
+            #     n_lin_w = torch.matmul(n_lin_w, o_proj)
+            #     n_lin_w = n_lin_w.permute(1, 0, 2).reshape(
+            #         config.r_model, config.num_heads * config.r_kv)
+
             linear.weight.copy_(n_lin_w)
 
         for n, p in model.named_parameters():
             if n not in state_dict:
-                continue
-            if 'lora' in n:
                 continue
             if p.shape == state_dict[n].shape:
                 p.copy_(state_dict[n])
@@ -287,35 +404,35 @@ class LlamaUtils:
                     block_id, "post_attention_layernorm")
                 ffn_norm_w = get_norm_params(block_id, 'input_layernorm')
 
-                # self_attn
+            # self_attn
 
                 load_qk_params(
-                    name + ".self_attn.q_proj",
+                    "base_model.model." + name + ".self_attn.q_proj",
                     self_attn.q_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_qk_params(
-                    name + ".self_attn.k_proj",
+                    "base_model.model." + name + ".self_attn.k_proj",
                     self_attn.k_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_afternorm_linear(
-                    name + ".self_attn.v_proj",
+                    "base_model.model." + name + ".self_attn.v_proj",
                     self_attn.v_proj,
                     att_norm_w,
                     norm_proj,
                 )
                 load_beforenorm_linear(
-                    name + ".self_attn.o_proj",
+                    "base_model.model." + name + ".self_attn.o_proj",
                     self_attn.o_proj,
                     norm_proj,
                 )
 
-                # FFN
+            # FFN
                 load_afternorm_linear(
-                    name + ".mlp.gate_proj",
+                    "base_model.model." + name + ".mlp.gate_proj",
                     ffn.gate_proj,
                     ffn_norm_w,
                     norm_proj,
@@ -323,7 +440,7 @@ class LlamaUtils:
                     isFFN=True
                 )
                 load_afternorm_linear(
-                    name + ".mlp.up_proj",
+                    "base_model.model." + name + ".mlp.up_proj",
                     ffn.up_proj,
                     ffn_norm_w,
                     norm_proj,
@@ -331,7 +448,7 @@ class LlamaUtils:
                     isFFN=True
                 )
                 load_beforenorm_linear(
-                    name + ".mlp.down_proj",
+                    "base_model.model." + name + ".mlp.down_proj",
                     ffn.down_proj,
                     norm_proj,
                     prune_dim=1,
@@ -345,7 +462,14 @@ class LlamaUtils:
                     torch.ones_like(module.input_layernorm.weight)
                 )
 
-        model.base_model.model.model.norm.weight.copy_(
-            teacher.base_model.model.model.norm.weight)
-        model.base_model.model.model.down_linear.weight.copy_(norm_proj.T)
-        model.base_model.model.model.up_linear.weight.copy_(norm_proj)
+        model.model.norm.weight.copy_(
+            torch.ones_like(teacher.base_model.model.model.norm.weight))
+
+        model.model.down_linear.weight.copy_(norm_proj.T)
+
+        temp0 = norm_proj.to(dtype=torch.float)
+        temp1 = torch.diag(
+            teacher.base_model.model.model.norm.weight).to(dtype=torch.float)
+        temp2 = temp1.T @ temp0
+        temp2 = temp2.to(dtype=torch.float16)
+        model.model.up_linear.weight.copy_(temp2)
