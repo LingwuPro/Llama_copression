@@ -2,6 +2,7 @@ svd_results/
 __pycache__/
 BoolQ.py 
 checkpoint/
+checkpoint-backup/
 answer.txt
 train.jsonl
 winogrande_1.1

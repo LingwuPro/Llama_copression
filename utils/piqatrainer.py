@@ -1,60 +1,62 @@
-import random
-import numpy as np
+import time
 import math
+import numpy as np
 import torch
-from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
-from tqdm import tqdm
-from utils.piqautils import PiqaUtils
-from torch.utils.data import Subset
-
+from transformers import Seq2SeqTrainer
+from transformers.trainer_utils import PredictionOutput, speed_metrics
 from typing import Dict, List, Any, Tuple, Callable, Union, Optional, Sequence
 
+class LlamaTrainer(Seq2SeqTrainer):
 
-class LlamaPiqaTrainer:
-    def __init__(self,
-                 args,
-                 model,
-                 dataset: Dict[str, List],
-                 prompter,
-                 tokenizer,
-                 data_collator: Callable
-                 ) -> None:
-        self.args = args
-        self.model = model
-        self.datasets = dataset
-        self.prompter = prompter
-        self.tokenizer = tokenizer
-        self.data_collator = data_collator
-        if torch.cuda.is_available():
-            self.device = "cuda"
-        else:
-            self.device = "cpu"
-
-    @torch.no_grad()
-    def collect(self):
-        args = self.args
-        dataset_utils = PiqaUtils(
-            self.args, "goal", "sol1", "sol2")
-
-        dataset = self.datasets
-        indices = min(len(dataset["goal"]), args.data_sample_num)
-        dataset["goal"] = dataset["goal"][:indices]
-        dataset["sol1"] = dataset["sol1"][:indices]
-        dataset["sol2"] = dataset["sol2"][:indices]
-
-        instructions, inputs = dataset_utils.preprocess_function(
-            dataset, "goal", "sol1", "sol2")
-        generation_config = GenerationConfig(
-            temperature=0.1,
-            top_p=0.75,
-            top_k=40,
-            num_beams=4,
+    def __init__(self, *args, **kw_args):
+        super().__init__(*args, **kw_args)
+    
+    def collect(
+        self, ignore_keys=None, metric_key_prefix: str = "test", **gen_kwargs
+    ):
+        gen_kwargs = gen_kwargs.copy()
+        gen_kwargs["max_length"] = (
+            gen_kwargs["max_length"] if gen_kwargs.get("max_length") is not None else self.args.generation_max_length
         )
-        for instruction, input in tqdm(zip(instructions, inputs)):
-            prompt = self.prompter.generate_prompt(instruction, input)
-            inputs = self.tokenizer(
-                prompt, return_tensors="pt").to(self.device)
-            generation_output = self.model(
-                **inputs
+        gen_kwargs["num_beams"] = (
+            gen_kwargs["num_beams"] if gen_kwargs.get("num_beams") is not None else self.args.generation_num_beams
+        )
+        self._gen_kwargs = gen_kwargs
+
+        eval_dataset = self.eval_dataset
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+
+        # Temporarily disable metric computation, we will do it in the loop here.
+        compute_metrics = self.compute_metrics
+        self.compute_metrics = None
+        start_time = time.time()
+        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+        try:
+            output = eval_loop(
+                eval_dataloader,
+                description="Evaluation",
+                prediction_loss_only=True,
+                ignore_keys=ignore_keys,
+                metric_key_prefix=metric_key_prefix,
             )
-            # print("generation_output_loss: ", generation_output.loss)
+        finally:
+            self.compute_metrics = compute_metrics
+        total_batch_size = self.args.eval_batch_size * self.args.world_size
+        if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+        output.metrics.update(
+            speed_metrics(
+                metric_key_prefix,
+                start_time,
+                num_samples=output.num_samples,
+                num_steps=math.ceil(output.num_samples / total_batch_size),
+            )
+        )
+        metrics = output.metrics
+
+        if self.args.should_log:
+            # Only the main node log the results by default
+            self.log(metrics)
+
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
+        return metrics

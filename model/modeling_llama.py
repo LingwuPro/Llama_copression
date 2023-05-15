@@ -1386,13 +1386,12 @@ class LlamaMLP(nn.Module):
         self,
         hidden_size: int,
         intermediate_size: int,
-        hidden_act: str,
-        sub_size: int
+        hidden_act: str
     ):
         super().__init__()
-        self.gate_proj = nn.Linear(sub_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, sub_size, bias=False)
-        self.up_proj = nn.Linear(sub_size, intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
@@ -1406,7 +1405,7 @@ class LlamaAttention(nn.Module):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
-        self.sub_size = config.sub_size
+        self.r_model = config.r_model
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
         self.max_position_embeddings = config.max_position_embeddings
@@ -1417,13 +1416,13 @@ class LlamaAttention(nn.Module):
                 f" and `num_heads`: {self.num_heads})."
             )
         self.q_proj = nn.Linear(
-            self.sub_size, self.num_heads * self.head_dim, bias=False)
+            self.r_model, self.num_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(
-            self.sub_size, self.num_heads * self.head_dim, bias=False)
+            self.r_model, self.num_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(
-            self.sub_size, self.num_heads * self.head_dim, bias=False)
+            self.r_model, self.num_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, self.sub_size, bias=False)
+            self.num_heads * self.head_dim, self.r_model, bias=False)
         self.rotary_emb = LlamaRotaryEmbedding(
             self.head_dim, max_position_embeddings=self.max_position_embeddings)
 
@@ -1509,19 +1508,14 @@ class LlamaDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = LlamaAttention(config=config)
         self.mlp = LlamaMLP(
-            hidden_size=self.hidden_size,
+            hidden_size=config.r_model,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
-            sub_size=config.sub_size
         )
-        # self.down_linear = nn.Linear(
-        #     config.hidden_size, config.sub_size, bias=False)
         self.input_layernorm = LlamaRMSNorm(
-            config.sub_size, eps=config.rms_norm_eps)
+            config.r_model, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(
-            config.sub_size, eps=config.rms_norm_eps)
-        # self.up_linear = nn.Linear(
-        #     config.sub_size, config.hidden_size, bias=False)
+            config.r_model, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -1711,13 +1705,13 @@ class LlamaModel(LlamaPreTrainedModel):
             config.vocab_size, config.hidden_size, self.padding_idx)
 
         self.down_linear = nn.Linear(
-            config.hidden_size, config.sub_size, bias=False)
+            config.hidden_size, config.r_model, bias=False)
 
         self.layers = nn.ModuleList(
             [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)])
 
         self.up_linear = nn.Linear(
-            config.sub_size, config.hidden_size, bias=False)
+            config.r_model, config.hidden_size, bias=False)
 
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -1897,11 +1891,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.model = LlamaModel(config)
-
-        # self.up_linear = nn.Linear(
-        #     config.sub_size, config.hidden_size, bias=False)
-        # nn.init.uniform_(self.up_linear.weight, a=1, b=1).to(
-        #     'cpu', dtype=torch.float16)
 
         self.lm_head = nn.Linear(
             config.hidden_size, config.vocab_size, bias=False)
