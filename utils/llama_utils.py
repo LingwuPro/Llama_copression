@@ -204,6 +204,7 @@ class LlamaUtils:
     ):
         device = "cpu"
         norm_proj: torch.Tensor = compression_params["norm_proj"]
+        norm_proj.to(dtype=torch.float)
 
         config: LlamaConfig = model.config
         block_pat = re.compile('model\.layers\.(\d+)')
@@ -224,9 +225,9 @@ class LlamaUtils:
             diag0 = torch.diag(norm_w).to(device, dtype=torch.float)
             part = norm_proj.to(device, dtype=torch.float)
 
-            n_lin_w = lin_w @ diag0 @ part
+            n_lin_w = (lin_w @ diag0 @ part) * \
+                math.sqrt(config.hidden_size / config.sub_size)
             n_lin_w.to(dtype=torch.float16)
-
             linear.weight.copy_(n_lin_w)
 
         def load_afternorm_linear(
@@ -237,7 +238,6 @@ class LlamaUtils:
                 retain_indices: Optional[torch.Tensor] = None,
                 prune_dim: Optional[int] = None,
                 v_proj: Optional[torch.Tensor] = None,
-                isFFN=False
         ):
             lin_w = state_dict[name + ".weight"]
 
@@ -257,7 +257,6 @@ class LlamaUtils:
                 retain_indices: Optional[torch.Tensor] = None,
                 prune_dim: Optional[int] = None,
                 o_proj: Optional[torch.Tensor] = None,
-                isFFN=False
         ):
             lin_w = state_dict[name + ".weight"]
 
@@ -284,11 +283,10 @@ class LlamaUtils:
 
                 block_id = int(match_block.group(1))
                 att_norm_w = get_norm_params(
-                    block_id, "post_attention_layernorm")
-                ffn_norm_w = get_norm_params(block_id, 'input_layernorm')
-
+                    block_id, "input_layernorm")
+                ffn_norm_w = get_norm_params(
+                    block_id, 'post_attention_layernorm')
                 # self_attn
-
                 load_qk_params(
                     name + ".self_attn.q_proj",
                     self_attn.q_proj,
@@ -320,7 +318,6 @@ class LlamaUtils:
                     ffn_norm_w,
                     norm_proj,
                     prune_dim=0,
-                    isFFN=True
                 )
                 load_afternorm_linear(
                     name + ".mlp.up_proj",
@@ -328,14 +325,12 @@ class LlamaUtils:
                     ffn_norm_w,
                     norm_proj,
                     prune_dim=0,
-                    isFFN=True
                 )
                 load_beforenorm_linear(
                     name + ".mlp.down_proj",
                     ffn.down_proj,
                     norm_proj,
                     prune_dim=1,
-                    isFFN=True
                 )
 
                 module.post_attention_layernorm.weight.copy_(

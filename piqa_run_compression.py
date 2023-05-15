@@ -116,7 +116,7 @@ def parse_args():
     parser.add_argument('--comp_mode', type=int, default=0)
     parser.add_argument('--use_subset', action="store_true")
     parser.add_argument('--data_sample_num', type=int, default=20)
-    parser.add_argument('--r_model', type=int, default=4096)
+    parser.add_argument('--r_model', type=int, default=3072)
     parser.add_argument('--r_kv', type=int, default=48)
     parser.add_argument('--r_ff', type=int, default=2304)
     parser.add_argument('--en_num_layers', type=int, default=12)
@@ -224,7 +224,7 @@ def run():
     setup_seed(args.seed)
 
     compression_params = torch.load(
-        "./svd_results/piqa-4096/alpaca_4096_48_0_params.pt", map_location='cpu')
+        "./svd_results/piqa-4096/alpaca_3072_48_0_params.pt", map_location='cpu')
 
     model_config = LlamaConfig.from_pretrained(base_model)
     model = ReduLlamaForCausalLM(model_config)
@@ -299,82 +299,81 @@ def run():
 
     model.to(device)
 
-    # resume_from_checkpoint = './checkpoint'
-    # if resume_from_checkpoint:
-    #     # Check the available weights and load them
-    #     checkpoint_name = os.path.join(
-    #         resume_from_checkpoint, "pytorch_model.bin"
-    #     )  # Full checkpoint
-    #     if not os.path.exists(checkpoint_name):
-    #         checkpoint_name = os.path.join(
-    #             resume_from_checkpoint, "adapter_model.bin"
-    #         )  # only LoRA model - LoRA config above has to fit
-    #         resume_from_checkpoint = (
-    #             False  # So the trainer won't try loading its state
-    #         )
-    #     # The two files above have a different name depending on how they were saved, but are actually the same.
-    #     if os.path.exists(checkpoint_name):
-    #         print(f"Restarting from {checkpoint_name}")
-    #         adapters_weights = torch.load(checkpoint_name)
-    #         # print(adapters_weights)
-    #         set_peft_model_state_dict(model, adapters_weights)
-    #         print(model)
-    #     else:
-    #         print(
-    #             f"Checkpoint {checkpoint_name} not found.\nWe will start a new trainer")
+    resume_from_checkpoint = './checkpoint'
+    if resume_from_checkpoint:
 
-    #         if data_path.endswith(".json") or data_path.endswith(".jsonl"):
-    #             data = load_dataset("json", data_files=data_path)
-    #         else:
-    #             data = load_dataset(data_path)
+        checkpoint_name = os.path.join(
+            resume_from_checkpoint, "pytorch_model.bin"
+        )
+        if not os.path.exists(checkpoint_name):
+            checkpoint_name = os.path.join(
+                resume_from_checkpoint, "adapter_model.bin"
+            )  # only LoRA model - LoRA config above has to fit
+            resume_from_checkpoint = (
+                False  # So the trainer won't try loading its state
+            )
+        # The two files above have a different name depending on how they were saved, but are actually the same.
+        if os.path.exists(checkpoint_name):
+            print(f"Restarting from {checkpoint_name}")
+            adapters_weights = torch.load(checkpoint_name)
+            # print(adapters_weights)
+            set_peft_model_state_dict(model, adapters_weights)
+        else:
+            print(
+                f"Checkpoint {checkpoint_name} not found.\nWe will start a new trainer")
 
-    #         train_val = data['train'].train_test_split(
-    #             test_size=0.1, shuffle=True, seed=42
-    #         )
-    #         train_data = (
-    #             train_val["train"].shuffle().map(generate_and_tokenize_prompt)
-    #         )
-    #         val_data = (
-    #             train_val["test"].shuffle().map(generate_and_tokenize_prompt)
-    #         )
-    #         save_columns = ['input_ids', 'attention_mask', 'labels']
+            if data_path.endswith(".json") or data_path.endswith(".jsonl"):
+                data = load_dataset("json", data_files=data_path)
+            else:
+                data = load_dataset(data_path)
 
-    #         train_data = train_data.remove_columns(
-    #             set(data['train'].column_names) - set(save_columns))
-    #         val_data = val_data.remove_columns(
-    #             set(data['train'].column_names) - set(save_columns))
+            train_val = data['train'].train_test_split(
+                test_size=0.1, shuffle=True, seed=42
+            )
+            train_data = (
+                train_val["train"].shuffle().map(generate_and_tokenize_prompt)
+            )
+            val_data = (
+                train_val["test"].shuffle().map(generate_and_tokenize_prompt)
+            )
+            save_columns = ['input_ids', 'attention_mask', 'labels']
 
-    #         trainer = transformers.Trainer(
-    #             model=model,
-    #             train_dataset=train_data,
-    #             eval_dataset=None,
-    #             args=transformers.TrainingArguments(
-    #                 per_device_train_batch_size=4,
-    #                 gradient_accumulation_steps=32,
-    #                 warmup_steps=100,
-    #                 num_train_epochs=3,
-    #                 learning_rate=3e-4,
-    #                 logging_steps=10,
-    #                 optim="adamw_torch",
-    #                 evaluation_strategy="no",
-    #                 eval_steps=None,
-    #                 save_strategy="steps",
-    #                 save_steps=30,
-    #                 output_dir=output_dir,
-    #                 save_total_limit=3,
-    #                 load_best_model_at_end=False,
-    #                 ddp_find_unused_parameters=False if int(
-    #                     os.environ.get("WORLD_SIZE", 1)) != 1 else None,
-    #                 group_by_length=False,
-    #                 remove_unused_columns=False
-    #             ),
-    #             data_collator=transformers.DataCollatorForSeq2Seq(
-    #                 tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-    #             ),
-    #         )
+            train_data = train_data.remove_columns(
+                set(data['train'].column_names) - set(save_columns))
+            val_data = val_data.remove_columns(
+                set(data['train'].column_names) - set(save_columns))
 
-    #         trainer.train()
-    #         model.save_pretrained(output_dir)
+            trainer = transformers.Trainer(
+                model=teacher,
+                train_dataset=train_data,
+                eval_dataset=None,
+                args=transformers.TrainingArguments(
+                    per_device_train_batch_size=4,
+                    gradient_accumulation_steps=32,
+                    warmup_steps=100,
+                    num_train_epochs=1,
+                    learning_rate=3e-4,
+                    logging_steps=10,
+                    optim="adamw_torch",
+                    evaluation_strategy="no",
+                    eval_steps=None,
+                    save_strategy="steps",
+                    save_steps=30,
+                    output_dir=output_dir,
+                    save_total_limit=3,
+                    load_best_model_at_end=False,
+                    ddp_find_unused_parameters=False if int(
+                        os.environ.get("WORLD_SIZE", 1)) != 1 else None,
+                    group_by_length=False,
+                    remove_unused_columns=False
+                ),
+                data_collator=transformers.DataCollatorForSeq2Seq(
+                    tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+                ),
+            )
+
+            trainer.train()
+            model.save_pretrained(output_dir)
 
     dev_dataset = batch2dict('./metric/piqa/inputs/tests-tiny.jsonl')
 
@@ -382,7 +381,7 @@ def run():
 
     for data in tqdm(dev_dataset, total=len(dev_dataset)):
         answer.append(
-            evaluate(model, data['instruction'], input=data['input']))
+            evaluate(teacher, data['instruction'], input=data['input']))
 
     print(answer)
 
