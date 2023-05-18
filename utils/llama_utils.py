@@ -19,7 +19,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Optional, Dict, List, Callable, Any, Union, Tuple
 from collections import defaultdict
-from utils.piqatrainer import LlamaTrainer
+from trainer import LlamaTrainer
 
 if torch.cuda.is_available():
     device = "cuda"

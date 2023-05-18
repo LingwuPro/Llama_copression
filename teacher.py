@@ -1,53 +1,23 @@
-import re
-import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-
-from torch.utils.data import Dataset
+import random
+import argparse
+import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-import numpy as np
-import random
-from sklearn.model_selection import train_test_split
+from transformers import LlamaTokenizer, LlamaConfig, LlamaForCausalLM
+
 from typing import Optional, Dict, List
-import argparse
-
-
-import json
-from utils.llama_utils import LlamaUtils
-from utils.prompter import Prompter
-from transformers import GenerationConfig, LlamaTokenizer, LlamaConfig, LlamaForCausalLM
-from model.modeling_llama import LlamaForCausalLM as ReduLlamaForCausalLM
-from peft import PeftModel, get_peft_config, set_peft_model_state_dict
-
-
-from datasets import load_dataset
-from transformers import DataCollatorForSeq2Seq
-from tqdm import tqdm
-
+from utils.eval_util import evaluate
 
 if torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
-input_filepath = './metric/piqa/inputs/train.jsonl'
-label_filepath = './metric/piqa/label/train-labels.lst'
-
-data_path = 'alpaca_data_gpt4.json'
-model_name: str = "decapoda-research/llama-7b-hf"
-lora_weights: str = "./lora-alpaca"
-
-# The prompt template to use, will default to alpaca.
-prompt_template: str = "alpaca"
-cutoff_len: int = 256
-
-output_dir = './checkpoint'
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--r_model', type=int, default=3072)
+    parser.add_argument('--model_name', type=str, default="yahma/llama-7b-hf")
     return parser.parse_args()
 
 def setup_seed(seed: int):
@@ -56,6 +26,35 @@ def setup_seed(seed: int):
     np.random.seed(seed)
     random.seed(seed)
 
+def run():
+
+    args = parse_args()
+    setup_seed(args.seed)
+
+    # compression_params = torch.load(
+    #     f"./svd_results/piqa-256/alpaca_{args.r_model}_params.pt", map_location='cpu')
+
+    teacher: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(args.model_name)
+    # teacher: PeftModel = PeftModel.from_pretrained(teacher, lora_weights)
+    # teacher: LlamaForCausalLM = teacher.merge_and_unload()
+    teacher.to(device)
+
+    tokenizer = LlamaTokenizer.from_pretrained(args.model_name)
+    tokenizer.pad_token_id = 0
+
+    evaluate(
+        model=teacher,
+        tokenizer=tokenizer,
+        dataset_name="piqa",
+        device=device
+    )
+
+
+if __name__ == '__main__':
+    run()
+
+
+"""
 
 def batch2dict(input_filepath, label_filepath=None):
     with open(input_filepath, encoding="utf-8") as input_file:
@@ -118,43 +117,4 @@ def evaluate(
     s = generation_output.sequences[0]
     output = tokenizer.decode(s)
     return prompter.get_response(output)
-
-def run():
-    global prompter
-    global tokenizer
-
-    prompter = Prompter(prompt_template)
-    tokenizer = LlamaTokenizer.from_pretrained(model_name)
-
-    args = parse_args()
-    comp_utils = LlamaUtils()
-
-    setup_seed(args.seed)
-
-    # compression_params = torch.load(
-    #     f"./svd_results/piqa-256/alpaca_{args.r_model}_params.pt", map_location='cpu')
-
-    teacher: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(model_name)
-    teacher: PeftModel = PeftModel.from_pretrained(teacher, lora_weights)
-    teacher: LlamaForCausalLM = teacher.merge_and_unload()
-    teacher.config.pad_token_id = 0  # unk
-    teacher.config.bos_token_id = 1
-    teacher.config.eos_token_id = 2
-
-    teacher.to(device)
-
-    dev_dataset = batch2dict('./metric/piqa/inputs/valid.jsonl')
-
-    answer = []
-
-    for data in tqdm(dev_dataset, total=len(dev_dataset)):
-        answer.append(evaluate(teacher, data['instruction'], input=data['input']))
-
-    print(answer)
-
-    with open("answer.txt", 'w') as f:
-        for i in answer:
-            f.write(i + '\n')
-
-if __name__ == '__main__':
-    run()
+"""

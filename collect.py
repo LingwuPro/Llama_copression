@@ -10,7 +10,7 @@ from peft import PeftModel
 from transformers import LlamaForCausalLM, LlamaTokenizer
 from datasets import load_dataset
 from utils.prompter import Prompter
-from utils.piqatrainer import LlamaTrainer
+from trainer import LlamaTrainer
 from utils.llama_utils import LlamaUtils
 from typing import Optional, List
 import datasets
