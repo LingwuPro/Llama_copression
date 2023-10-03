@@ -7,3 +7,6 @@ answer.txt
 train.jsonl
 winogrande_1.1
 lora-alpaca/
+alpaca_data_gpt4.json
+alpaca_tiny.json
+alpaca_data_gpt4-backup.json
